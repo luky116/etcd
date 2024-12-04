@@ -51,6 +51,7 @@ type leaseProxy struct {
 func NewLeaseProxy(ctx context.Context, c *clientv3.Client) (pb.LeaseServer, <-chan struct{}) {
 	cctx, cancel := context.WithCancel(ctx)
 	lp := &leaseProxy{
+		// proxy->etcd-server 建立连接
 		leaseClient: pb.NewLeaseClient(c.ActiveConnection()),
 		lessor:      c.Lease,
 		ctx:         cctx,
@@ -59,6 +60,7 @@ func NewLeaseProxy(ctx context.Context, c *clientv3.Client) (pb.LeaseServer, <-c
 	ch := make(chan struct{})
 	go func() {
 		defer close(ch)
+		// 如果收到关闭信号，处理关闭相关的逻辑
 		<-lp.leader.stopNotify()
 		lp.mu.Lock()
 		select {
@@ -74,6 +76,7 @@ func NewLeaseProxy(ctx context.Context, c *clientv3.Client) (pb.LeaseServer, <-c
 }
 
 func (lp *leaseProxy) LeaseGrant(ctx context.Context, cr *pb.LeaseGrantRequest) (*pb.LeaseGrantResponse, error) {
+	// 通过 leaseClient 发送 LeaseGrant 请求
 	rp, err := lp.leaseClient.LeaseGrant(ctx, cr, grpc.WaitForReady(true))
 	if err != nil {
 		return nil, err
@@ -130,6 +133,7 @@ func (lp *leaseProxy) LeaseLeases(ctx context.Context, rr *pb.LeaseLeasesRequest
 	return rp, err
 }
 
+// 这个 stream 应该是 client->proxy 之间的连接
 func (lp *leaseProxy) LeaseKeepAlive(stream pb.Lease_LeaseKeepAliveServer) error {
 	lp.mu.Lock()
 	select {
@@ -137,6 +141,7 @@ func (lp *leaseProxy) LeaseKeepAlive(stream pb.Lease_LeaseKeepAliveServer) error
 		lp.mu.Unlock()
 		return lp.ctx.Err()
 	default:
+		// 记录+1
 		lp.wg.Add(1)
 	}
 	lp.mu.Unlock()
@@ -244,6 +249,7 @@ type leaseProxyStream struct {
 
 func (lps *leaseProxyStream) recvLoop() error {
 	for {
+		// 接收 client 心跳的请求
 		rr, err := lps.stream.Recv()
 		if err == io.EOF {
 			return nil
@@ -256,14 +262,17 @@ func (lps *leaseProxyStream) recvLoop() error {
 		if !ok {
 			neededResps = &atomicCounter{}
 			lps.keepAliveLeases[rr.ID] = neededResps
+			// 记录 keepAliveLoop() 的数量
 			lps.wg.Add(1)
 			go func() {
 				defer lps.wg.Done()
+				// 给 etcd-server 发送请求
 				if err := lps.keepAliveLoop(rr.ID, neededResps); err != nil {
 					lps.cancel()
 				}
 			}()
 		}
+		// 记录有多少个 client 要给这个 release 发送心跳
 		neededResps.add(1)
 		lps.mu.Unlock()
 	}
@@ -272,11 +281,13 @@ func (lps *leaseProxyStream) recvLoop() error {
 func (lps *leaseProxyStream) keepAliveLoop(leaseID int64, neededResps *atomicCounter) error {
 	cctx, ccancel := context.WithCancel(lps.ctx)
 	defer ccancel()
+	// 发送 keepalive 请求给 etcd-server
 	respc, err := lps.lessor.KeepAlive(cctx, clientv3.LeaseID(leaseID))
 	if err != nil {
 		return err
 	}
 	// ticker expires when loop hasn't received keepalive within TTL
+	// 超时未收到 client 的 keepalive 请求
 	var ticker <-chan time.Time
 	for {
 		select {
@@ -289,6 +300,7 @@ func (lps *leaseProxyStream) keepAliveLoop(leaseID int64, neededResps *atomicCou
 				ticker = nil
 				continue
 			}
+			// 当前 leaderID 移除
 			delete(lps.keepAliveLeases, leaseID)
 			lps.mu.Unlock()
 			return nil
@@ -328,6 +340,7 @@ func (lps *leaseProxyStream) keepAliveLoop(leaseID int64, neededResps *atomicCou
 				ID:     int64(rp.ID),
 				TTL:    rp.TTL,
 			}
+			// 将结果返回给 client
 			lps.replyToClient(r, neededResps)
 		}
 	}

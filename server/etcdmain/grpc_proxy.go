@@ -124,34 +124,49 @@ func newGRPCProxyStartCommand() *cobra.Command {
 	cmd := cobra.Command{
 		Use:   "start",
 		Short: "start the grpc proxy",
-		Run:   startGRPCProxy,
+		Run:   startGRPCProxy, // 启动 etcd proxy 的入口方法
 	}
 
+	// etcd-proxy 的端口，gRPC 和 HTTP 服务都会监听这个端口
 	cmd.Flags().StringVar(&grpcProxyListenAddr, "listen-addr", "127.0.0.1:23790", "listen address")
 	cmd.Flags().StringVar(&grpcProxyDNSCluster, "discovery-srv", "", "domain name to query for SRV records describing cluster endpoints")
 	cmd.Flags().StringVar(&grpcProxyDNSClusterServiceName, "discovery-srv-name", "", "service name to query when using DNS discovery")
 	cmd.Flags().StringVar(&grpcProxyMetricsListenAddr, "metrics-addr", "", "listen for endpoint /metrics requests on an additional interface")
 	cmd.Flags().BoolVar(&grpcProxyInsecureDiscovery, "insecure-discovery", false, "accept insecure SRV records")
-	cmd.Flags().StringSliceVar(&grpcProxyEndpoints, "endpoints", []string{"127.0.0.1:2379"}, "comma separated etcd cluster endpoints")
+	// etcd 集群的地址，proxy 会将请求转发到这些地址
+	cmd.Flags().StringSliceVar(&grpcProxyEndpoints, "endpoints", []string{"127.0.0.1:12379", "127.0.0.1:22379", "127.0.0.1:32379"}, "comma separated etcd cluster endpoints")
+	// proxy 自动更新 ETCD 集群成员信息的间隔，默认不自动更新（服务发现）
 	cmd.Flags().DurationVar(&grpcProxyEndpointsAutoSyncInterval, "endpoints-auto-sync-interval", 0, "etcd endpoints auto sync interval (disabled by default)")
+	// proxy 自身的地址，用于做自我健康检查使用
 	cmd.Flags().StringVar(&grpcProxyAdvertiseClientURL, "advertise-client-url", "127.0.0.1:23790", "advertise address to register (must be reachable by client)")
+	// 用于注册代理的前缀（必须与其他 grpc-proxy 成员共享）
 	cmd.Flags().StringVar(&grpcProxyResolverPrefix, "resolver-prefix", "", "prefix to use for registering proxy (must be shared with other grpc-proxy members)")
 	cmd.Flags().IntVar(&grpcProxyResolverTTL, "resolver-ttl", 0, "specify TTL, in seconds, when registering proxy endpoints")
-	cmd.Flags().StringVar(&grpcProxyNamespace, "namespace", "", "string to prefix to all keys for namespacing requests")
-	cmd.Flags().BoolVar(&grpcProxyEnablePprof, "enable-pprof", false, `Enable runtime profiling data via HTTP server. Address is at client URL + "/debug/pprof/"`)
+	// proxy 处理的数据的默认前缀
+	cmd.Flags().StringVar(&grpcProxyNamespace, "namespace", "/onemeta", "string to prefix to all keys for namespacing requests")
+	// 是否允许导出 pprof 文件，用于排查线上问题。默认为 false
+	cmd.Flags().BoolVar(&grpcProxyEnablePprof, "enable-pprof", true, `Enable runtime profiling data via HTTP server. Address is at client URL + "/debug/pprof/"`)
+	// proxy 的持久化数据存放地方，只有开启 TLS 时候会使用
 	cmd.Flags().StringVar(&grpcProxyDataDir, "data-dir", "default.proxy", "Data directory for persistent data")
+	// 允许 client 发送的最大数据大小，默认为 1.5 MiB
 	cmd.Flags().IntVar(&grpcMaxCallSendMsgSize, "max-send-bytes", defaultGRPCMaxCallSendMsgSize, "message send limits in bytes (default value is 1.5 MiB)")
+	// 允许 etcd-server 返回的最大数据大小，默认不限制大小
 	cmd.Flags().IntVar(&grpcMaxCallRecvMsgSize, "max-recv-bytes", math.MaxInt32, "message receive limits in bytes (default value is math.MaxInt32)")
+	// 客户端在 ping 代理之前应等待的最小间隔长度，默认 5 秒
 	cmd.Flags().DurationVar(&grpcKeepAliveMinTime, "grpc-keepalive-min-time", embed.DefaultGRPCKeepAliveMinTime, "Minimum interval duration that a client should wait before pinging proxy.")
+	// 服务器到客户端的 ping 频率，以检查连接是否存活（0 表示禁用），默认 2 小时
 	cmd.Flags().DurationVar(&grpcKeepAliveInterval, "grpc-keepalive-interval", embed.DefaultGRPCKeepAliveInterval, "Frequency duration of server-to-client ping to check if a connection is alive (0 to disable).")
+	// 在关闭非响应连接之前等待的额外持续时间（0 表示禁用），默认 20 秒
 	cmd.Flags().DurationVar(&grpcKeepAliveTimeout, "grpc-keepalive-timeout", embed.DefaultGRPCKeepAliveTimeout, "Additional duration of wait before closing a non-responsive connection (0 to disable).")
 
+	// proxy->etcd-server 数据加密相关参数
 	// client TLS for connecting to server
 	cmd.Flags().StringVar(&grpcProxyCert, "cert", "", "identify secure connections with etcd servers using this TLS certificate file")
 	cmd.Flags().StringVar(&grpcProxyKey, "key", "", "identify secure connections with etcd servers using this TLS key file")
 	cmd.Flags().StringVar(&grpcProxyCA, "cacert", "", "verify certificates of TLS-enabled secure etcd servers using this CA bundle")
 	cmd.Flags().BoolVar(&grpcProxyInsecureSkipTLSVerify, "insecure-skip-tls-verify", false, "skip authentication of etcd server TLS certificates (CAUTION: this option should be enabled only for testing purposes)")
 
+	// client->proxy 数据加密相关参数
 	// client TLS for connecting to proxy
 	cmd.Flags().StringVar(&grpcProxyListenCert, "cert-file", "", "identify secure connections to the proxy using this TLS certificate file")
 	cmd.Flags().StringVar(&grpcProxyListenKey, "key-file", "", "identify secure connections to the proxy using this TLS key file")
@@ -163,16 +178,19 @@ func newGRPCProxyStartCommand() *cobra.Command {
 
 	// experimental flags
 	cmd.Flags().BoolVar(&grpcProxyEnableOrdering, "experimental-serializable-ordering", false, "Ensure serializable reads have monotonically increasing store revisions across endpoints.")
-	cmd.Flags().StringVar(&grpcProxyLeasing, "experimental-leasing-prefix", "", "leasing metadata prefix for disconnected linearized reads.")
+	cmd.Flags().StringVar(&grpcProxyLeasing, "experimental-leasing-prefix", "/onemeta", "leasing metadata prefix for disconnected linearized reads.")
 
+	// debug 级别日志
 	cmd.Flags().BoolVar(&grpcProxyDebug, "debug", false, "Enable debug-level logging for grpc-proxy.")
 
+	// 每个 client 能打开的最大的逻辑连接数量，即并发请求数，默认无限制
 	cmd.Flags().Uint32Var(&maxConcurrentStreams, "max-concurrent-streams", math.MaxUint32, "Maximum concurrent streams that each client can open at a time.")
 
 	return &cmd
 }
 
 func startGRPCProxy(cmd *cobra.Command, args []string) {
+	// 1、校验参数的合法性
 	checkArgs()
 	lvl := zap.InfoLevel
 	if grpcProxyDebug {
@@ -190,6 +208,7 @@ func startGRPCProxy(cmd *cobra.Command, args []string) {
 	// The proxy itself (ListenCert) can have not-empty CN.
 	// The empty CN is required for grpcProxyCert.
 	// Please see https://github.com/etcd-io/etcd/issues/11970#issuecomment-687875315  for more context.
+	// 2、判断是否校验 https 证书
 	tlsInfo := newTLS(grpcProxyListenCA, grpcProxyListenCert, grpcProxyListenKey, false)
 	if len(grpcProxyListenCipherSuites) > 0 {
 		cs, err := tlsutil.GetCipherSuites(grpcProxyListenCipherSuites)
@@ -211,23 +230,31 @@ func startGRPCProxy(cmd *cobra.Command, args []string) {
 	if tlsInfo != nil {
 		lg.Info("gRPC proxy server TLS", zap.String("tls-info", fmt.Sprintf("%+v", tlsInfo)))
 	}
+
+	// 3、生成流量分发的 cmux，用来将同一个端口的 HTTP 和 gRPC 协议的流量发到对应的服务处理（监听 23790 端口）
 	m := mustListenCMux(lg, tlsInfo)
+	// 4、创建 gRPC 服务的监听器
 	grpcl := m.Match(cmux.HTTP2())
 	defer func() {
 		grpcl.Close()
 		lg.Info("stop listening gRPC proxy client requests", zap.String("address", grpcProxyListenAddr))
 	}()
 
+	// 5、创建一个 client，和 etcd-server 建立连接
 	client := mustNewClient(lg)
 
 	// The proxy client is used for self-healthchecking.
 	// TODO: The mechanism should be refactored to use internal connection.
+	// 6、创建一个 client，和 etcd-proxy 自身建立连接
 	var proxyClient *clientv3.Client
 	if grpcProxyAdvertiseClientURL != "" {
 		proxyClient = mustNewProxyClient(lg, tlsInfo)
 	}
+
+	// 7、 一些性能和资源监控的封装，如Prometheus，PProf等
 	httpClient := mustNewHTTPClient(lg)
 
+	// 8、设置 http 路由
 	srvhttp, httpl := mustHTTPListener(lg, m, tlsInfo, client, proxyClient)
 
 	if err := http2.ConfigureServer(srvhttp, &http2.Server{
@@ -237,8 +264,11 @@ func startGRPCProxy(cmd *cobra.Command, args []string) {
 	}
 
 	errc := make(chan error, 3)
+	// 9、启动 gRPC 服务
 	go func() { errc <- newGRPCProxyServer(lg, client).Serve(grpcl) }()
+	// 10、启动 http 服务
 	go func() { errc <- srvhttp.Serve(httpl) }()
+	// 11、启动 cmux 分发器
 	go func() { errc <- m.Serve() }()
 	if len(grpcProxyMetricsListenAddr) > 0 {
 		mhttpl := mustMetricsListener(lg, tlsInfo)
@@ -287,9 +317,11 @@ func checkArgs() {
 }
 
 func mustNewClient(lg *zap.Logger) *clientv3.Client {
+	// 优先从 DNS 服务发现 etcd-server 的地址
 	srvs := discoverEndpoints(lg, grpcProxyDNSCluster, grpcProxyCA, grpcProxyInsecureDiscovery, grpcProxyDNSClusterServiceName)
 	eps := srvs.Endpoints
 	if len(eps) == 0 {
+		// 如果未配置服务发现，则使用配置文件指定的 etcd-server 地址
 		eps = grpcProxyEndpoints
 	}
 	cfg, err := newClientCfg(lg, eps)
@@ -302,6 +334,7 @@ func mustNewClient(lg *zap.Logger) *clientv3.Client {
 	cfg.DialOptions = append(cfg.DialOptions,
 		grpc.WithStreamInterceptor(grpcproxy.AuthStreamClientInterceptor))
 	cfg.Logger = lg.Named("client")
+	// 创建一个 etcd client 对象，连接到 etcd-server
 	client, err := clientv3.New(*cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -384,6 +417,7 @@ func newTLS(ca, cert, key string, requireEmptyCN bool) *transport.TLSInfo {
 }
 
 func mustListenCMux(lg *zap.Logger, tlsinfo *transport.TLSInfo) cmux.CMux {
+	// 设置监听端口，默认为 23790
 	l, err := net.Listen("tcp", grpcProxyListenAddr)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -402,6 +436,7 @@ func mustListenCMux(lg *zap.Logger, tlsinfo *transport.TLSInfo) cmux.CMux {
 	}
 
 	lg.Info("listening for gRPC proxy client requests", zap.String("address", grpcProxyListenAddr))
+	// 返回流量分发 CMux
 	return cmux.New(l)
 }
 
@@ -420,6 +455,7 @@ func newGRPCProxyServer(lg *zap.Logger, client *clientv3.Client) *grpc.Server {
 		}
 	}
 
+	// 创建 namespace 相关的 KV、Watcher、Lease
 	if len(grpcProxyNamespace) > 0 {
 		client.KV = namespace.NewKV(client.KV, grpcProxyNamespace)
 		client.Watcher = namespace.NewWatcher(client.Watcher, grpcProxyNamespace)
@@ -479,7 +515,9 @@ func newGRPCProxyServer(lg *zap.Logger, client *clientv3.Client) *grpc.Server {
 func mustHTTPListener(lg *zap.Logger, m cmux.CMux, tlsinfo *transport.TLSInfo, c *clientv3.Client, proxy *clientv3.Client) (*http.Server, net.Listener) {
 	httpClient := mustNewHTTPClient(lg)
 	httpmux := http.NewServeMux()
-	httpmux.HandleFunc("/", http.NotFound)
+	httpmux.HandleFunc("/", http.NotFound) // 配置 http 路由
+	// 测试效果
+	httpmux.HandleFunc("/hello", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("Hello, world!")) })
 	grpcproxy.HandleMetrics(httpmux, httpClient, c.Endpoints())
 	grpcproxy.HandleHealth(lg, httpmux, c)
 	grpcproxy.HandleProxyMetrics(httpmux)

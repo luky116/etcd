@@ -78,6 +78,7 @@ func HandleMetrics(mux *http.ServeMux, c *http.Client, eps []string) {
 
 	pathMetrics := etcdhttp.PathMetrics
 	mux.HandleFunc(pathMetrics, func(w http.ResponseWriter, r *http.Request) {
+		// 从第 0 个 etcd-server 节点获取 metrics
 		target := fmt.Sprintf("%s%s", eps[0], pathMetrics)
 		if !strings.HasPrefix(target, "http") {
 			scheme := "http"

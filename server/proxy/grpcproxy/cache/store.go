@@ -32,11 +32,17 @@ var (
 )
 
 type Cache interface {
+	// 数据添加到缓存中
 	Add(req *pb.RangeRequest, resp *pb.RangeResponse)
+	// 从缓存中获取数据
 	Get(req *pb.RangeRequest) (*pb.RangeResponse, error)
+	// 从缓存中删除数据
 	Compact(revision int64)
+	// 从缓存中删除指定范围的数据
 	Invalidate(key []byte, endkey []byte)
+	// 获取缓存的大小
 	Size() int
+	// 关闭缓存
 	Close()
 }
 

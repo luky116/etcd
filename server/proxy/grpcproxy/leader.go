@@ -59,6 +59,7 @@ func (l *leader) recvLoop() {
 	limiter := rate.NewLimiter(rate.Limit(retryPerSecond), retryPerSecond)
 	rev := int64(math.MaxInt64 - 2)
 	for limiter.Wait(l.ctx) == nil {
+		// 监听 client 是否失效？？
 		wch := l.w.Watch(l.ctx, lostLeaderKey, clientv3.WithRev(rev), clientv3.WithCreatedNotify())
 		cresp, ok := <-wch
 		if !ok {

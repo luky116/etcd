@@ -30,11 +30,13 @@ import (
 )
 
 type watchProxy struct {
+	// 被代理的 watcher 对象
 	cw  clientv3.Watcher
 	ctx context.Context
 
 	leader *leader
 
+	// 记录所有的 watcher 对象，用于批量广播通知
 	ranges *watchRanges
 
 	// mu protects adding outstanding watch servers through wg.
@@ -51,7 +53,9 @@ type watchProxy struct {
 func NewWatchProxy(ctx context.Context, lg *zap.Logger, c *clientv3.Client) (pb.WatchServer, <-chan struct{}) {
 	cctx, cancel := context.WithCancel(ctx)
 	wp := &watchProxy{
-		cw:     c.Watcher,
+		// 被代理的 Watcher 实例
+		cw: c.Watcher,
+
 		ctx:    cctx,
 		leader: newLeader(cctx, c.Watcher),
 
@@ -66,6 +70,7 @@ func NewWatchProxy(ctx context.Context, lg *zap.Logger, c *clientv3.Client) (pb.
 		wp.mu.Lock()
 		select {
 		case <-wp.ctx.Done():
+			// leader 断开连接
 		case <-wp.leader.disconnectNotify():
 			cancel()
 		}
@@ -94,25 +99,29 @@ func (wp *watchProxy) Watch(stream pb.Watch_WatchServer) (err error) {
 	wp.mu.Unlock()
 
 	ctx, cancel := context.WithCancel(stream.Context())
+
 	wps := &watchProxyStream{
 		ranges:   wp.ranges,
 		watchers: make(map[int64]*watcher),
-		stream:   stream,
-		watchCh:  make(chan *pb.WatchResponse, 1024),
-		ctx:      ctx,
-		cancel:   cancel,
-		kv:       wp.kv,
-		lg:       wp.lg,
+		// stream 表示 client->proxy 之间的连接
+		stream:  stream,
+		watchCh: make(chan *pb.WatchResponse, 1024),
+		ctx:     ctx,
+		cancel:  cancel,
+		kv:      wp.kv,
+		lg:      wp.lg,
 	}
 
 	var lostLeaderC <-chan struct{}
 	if md, ok := metadata.FromOutgoingContext(stream.Context()); ok {
 		v := md[rpctypes.MetadataRequireLeaderKey]
 		if len(v) > 0 && v[0] == rpctypes.MetadataHasLeader {
+			// leader 断开连接
 			lostLeaderC = wp.leader.lostNotify()
 			// if leader is known to be lost at creation time, avoid
 			// letting events through at all
 			select {
+			// 判断 leader 是否丢失
 			case <-lostLeaderC:
 				wp.wg.Done()
 				return rpctypes.ErrNoLeader
@@ -126,10 +135,12 @@ func (wp *watchProxy) Watch(stream pb.Watch_WatchServer) (err error) {
 	stopc := make(chan struct{}, 3)
 	go func() {
 		defer func() { stopc <- struct{}{} }()
+		// 不断监测客户端的请求
 		wps.recvLoop()
 	}()
 	go func() {
 		defer func() { stopc <- struct{}{} }()
+		// 不断发送数据给客户端
 		wps.sendLoop()
 	}()
 	// tear down watch if leader goes down or entire watch proxy is terminated
@@ -227,14 +238,17 @@ func (wps *watchProxyStream) checkPermissionForWatch(key, rangeEnd []byte) error
 
 func (wps *watchProxyStream) recvLoop() error {
 	for {
+		// stream：client->proxy 的连接
+		// 如果收到来自 client 的请求
 		req, err := wps.stream.Recv()
 		if err != nil {
 			return err
 		}
 		switch uv := req.RequestUnion.(type) {
+		// 如果是创建 Watcher 的请求
 		case *pb.WatchRequest_CreateRequest:
 			cr := uv.CreateRequest
-
+			// 检查权限
 			if err := wps.checkPermissionForWatch(cr.Key, cr.RangeEnd); err != nil {
 				wps.watchCh <- &pb.WatchResponse{
 					Header:       &pb.ResponseHeader{},
@@ -264,7 +278,9 @@ func (wps *watchProxyStream) recvLoop() error {
 			}
 			wps.nextWatcherID++
 			w.nextrev = cr.StartRevision
+			// 记录当前的 watcher
 			wps.watchers[w.id] = w
+			// 将 watcher 添加到 watchRanges 中，用于批量广播通知
 			wps.ranges.add(w)
 			wps.mu.Unlock()
 			wps.lg.Debug("create watcher", zap.String("key", w.wr.key), zap.String("end", w.wr.end), zap.Int64("watcherId", wps.nextWatcherID))
@@ -285,6 +301,7 @@ func (wps *watchProxyStream) sendLoop() {
 			if !ok {
 				return
 			}
+			// 将结果发送给 client
 			if err := wps.stream.Send(wresp); err != nil {
 				return
 			}

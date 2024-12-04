@@ -1,0 +1,48 @@
+version: '3'
+
+networks:
+  etcd-cluster:
+    external: true
+
+services:
+  etcd-node1:
+    image: quay.io/coreos/etcd:v3.5.5
+    container_name: etcd-node1
+    ports:
+      - "12379:2379"
+      - "12380:2380"
+    restart: always
+    volumes:
+      - ./etcd-node1:/data/app/etcd
+    command: etcd --name etcd-node1 --data-dir /data/app/etcd/ --advertise-client-urls http://172.20.0.10:2379 --initial-advertise-peer-urls http://172.20.0.10:2380 --listen-client-urls http://0.0.0.0:2379 --listen-peer-urls http://0.0.0.0:2380 --initial-cluster-token etcd-cluster --initial-cluster "etcd-node1=http://172.20.0.10:2380,etcd-node2=http://172.20.0.11:2380,etcd-node3=http://172.20.0.12:2380" --initial-cluster-state new
+    networks:
+      etcd-cluster:
+        ipv4_address: 172.20.0.10
+
+  etcd-node2:
+    image: quay.io/coreos/etcd:v3.5.5
+    container_name: etcd-node2
+    ports:
+      - "22379:2379"
+      - "22380:2380"
+    restart: always
+    volumes:
+      - ./etcd-node2:/data/app/etcd
+    command: etcd --name etcd-node2 --data-dir /data/app/etcd/ --advertise-client-urls http://172.20.0.11:2379 --initial-advertise-peer-urls http://172.20.0.11:2380 --listen-client-urls http://0.0.0.0:2379 --listen-peer-urls http://0.0.0.0:2380 --initial-cluster-token etcd-cluster --initial-cluster "etcd-node1=http://172.20.0.10:2380,etcd-node2=http://172.20.0.11:2380,etcd-node3=http://172.20.0.12:2380" --initial-cluster-state new
+    networks:
+      etcd-cluster:
+        ipv4_address: 172.20.0.11
+
+  etcd-node3:
+    image: quay.io/coreos/etcd:v3.5.5
+    container_name: etcd-node3
+    ports:
+      - "32379:2379"
+      - "32380:2380"
+    restart: always
+    volumes:
+      - ./etcd-node3:/data/app/etcd
+    command: etcd --name etcd-node3 --data-dir /data/app/etcd/ --advertise-client-urls http://172.20.0.12:2379 --initial-advertise-peer-urls http://172.20.0.12:2380 --listen-client-urls http://0.0.0.0:2379 --listen-peer-urls http://0.0.0.0:2380 --initial-cluster-token etcd-cluster --initial-cluster "etcd-node1=http://172.20.0.10:2380,etcd-node2=http://172.20.0.11:2380,etcd-node3=http://172.20.0.12:2380" --initial-cluster-state new
+    networks:
+      etcd-cluster:
+        ipv4_address: 172.20.0.12
